@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "942125871779",
+    "project_id": "restoapp-60ff3",
+    "storage_bucket": "restoapp-60ff3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:942125871779:android:b338f3c3a95d26329a4516",
+        "android_client_info": {
+          "package_name": "com.example.hellowordkotlin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCtU4o8yQpCqPTkY6NhsIviNRjyaDZGqNg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
