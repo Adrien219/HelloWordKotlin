@@ -3,14 +3,15 @@ package com.example.hellowordkotlin
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -18,27 +19,29 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.rememberAsyncImagePainter
 
-// --- IMPORTS DES COULEURS (Vérifie bien que ces fichiers existent dans ton dossier ui/theme) ---
+// --- THEME ---
 import com.example.hellowordkotlin.ui.theme.BgGray
 import com.example.hellowordkotlin.ui.theme.HelloWordKotlinTheme
 import com.example.hellowordkotlin.ui.theme.PrimaryRed
 
-// --- IMPORTS FIREBASE ---
+// --- FIREBASE ---
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.database.database
 import com.google.firebase.database.DataSnapshot
-// --- Modèles ---
-data class Product(val id: Int, val name: String, val category: String, val price: Double, val imageRes: Int)
+
+// --- RÉSEAU (OKHTTP) ---
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import java.io.IOException
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,58 +51,43 @@ class MainActivity : ComponentActivity() {
                 var user by remember { mutableStateOf(Firebase.auth.currentUser) }
                 var isAdmin by remember { mutableStateOf(false) }
 
-                var selectedProduct by remember { mutableStateOf<Product?>(null) }
+                var selectedProduct by remember { mutableStateOf<DataSnapshot?>(null) }
                 var isCartOpen by remember { mutableStateOf(false) }
                 var showAuthScreen by remember { mutableStateOf(false) }
                 var isProfileOpen by remember { mutableStateOf(false) }
                 var isAdminMode by remember { mutableStateOf(false) }
+                var isAddingProduct by remember { mutableStateOf(false) }
 
-                val cartItems = remember { mutableStateListOf<Product>() }
+                val cartItems = remember { mutableStateListOf<DataSnapshot>() }
                 val context = LocalContext.current
 
-                // Logique pour vérifier si l'utilisateur est Admin
                 LaunchedEffect(user) {
                     if (user != null) {
                         Firebase.database.reference.child("users").child(user!!.uid).child("isAdmin")
-                            .get().addOnSuccessListener { snapshot ->
-                                isAdmin = snapshot.value == true
-                            }
-                    } else {
-                        isAdmin = false
-                    }
+                            .get().addOnSuccessListener { isAdmin = it.value == true }
+                    } else { isAdmin = false }
                 }
 
                 Box(modifier = Modifier.fillMaxSize().background(BgGray)) {
                     when {
                         isAdminMode -> AdminOrdersScreen(onBack = { isAdminMode = false })
-
+                        isAddingProduct -> AddProductScreen(onBack = { isAddingProduct = false })
                         isProfileOpen -> ProfileScreen(
                             isAdmin = isAdmin,
                             onBack = { isProfileOpen = false },
-                            onAdminClick = {
-                                isProfileOpen = false
-                                isAdminMode = true
-                            },
-                            onLogout = {
-                                user = null
-                                isProfileOpen = false
-                            }
+                            onAdminClick = { isProfileOpen = false; isAdminMode = true },
+                            onAddProductClick = { isProfileOpen = false; isAddingProduct = true },
+                            onLogout = { user = null; isProfileOpen = false }
                         )
-
                         showAuthScreen -> AuthScreen(
-                            onAuthSuccess = {
-                                user = Firebase.auth.currentUser
-                                showAuthScreen = false
-                            },
+                            onAuthSuccess = { user = Firebase.auth.currentUser; showAuthScreen = false },
                             onBack = { showAuthScreen = false }
                         )
-
                         isCartOpen -> CartScreen(
                             cartItems = cartItems,
                             onBack = { isCartOpen = false },
                             onRemove = { cartItems.remove(it) }
                         )
-
                         selectedProduct != null -> DetailScreen(
                             product = selectedProduct!!,
                             onBack = { selectedProduct = null },
@@ -107,11 +95,10 @@ class MainActivity : ComponentActivity() {
                                 if (user == null) showAuthScreen = true
                                 else {
                                     cartItems.add(prod)
-                                    Toast.makeText(context, "${prod.name} ajouté !", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Ajouté au panier", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         )
-
                         else -> {
                             HomeScreen(
                                 onProductClick = { selectedProduct = it },
@@ -119,20 +106,14 @@ class MainActivity : ComponentActivity() {
                                     if (user == null) showAuthScreen = true
                                     else {
                                         cartItems.add(prod)
-                                        Toast.makeText(context, "${prod.name} ajouté !", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Ajouté !", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             )
                             BottomNavBar(
                                 cartSize = cartItems.size,
-                                onCartClick = {
-                                    if (user == null) showAuthScreen = true
-                                    else isCartOpen = true
-                                },
-                                onProfileClick = {
-                                    if (user == null) showAuthScreen = true
-                                    else isProfileOpen = true
-                                },
+                                onCartClick = { if (user == null) showAuthScreen = true else isCartOpen = true },
+                                onProfileClick = { if (user == null) showAuthScreen = true else isProfileOpen = true },
                                 modifier = Modifier.align(Alignment.BottomCenter)
                             )
                         }
@@ -143,452 +124,371 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- ÉCRAN : AUTHENTIFICATION ---
-@Composable
-fun AuthScreen(onAuthSuccess: () -> Unit, onBack: () -> Unit) {
-    var isSignUp by remember { mutableStateOf(false) }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var confirmPassword by remember { mutableStateOf("") }
-    var passwordVisible by remember { mutableStateOf(false) }
-    val auth = Firebase.auth
-    val context = LocalContext.current
+// --- UTILITAIRE UPLOAD ---
+fun uploadImageToImgBB(uri: android.net.Uri, context: android.content.Context, onResult: (String?) -> Unit) {
+    val client = OkHttpClient.Builder().connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
+    val apiKey = "71267471679a1414c6b726b82d1601a0"
+    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    Column(modifier = Modifier.fillMaxSize().background(Color.White).verticalScroll(rememberScrollState())) {
-        Box(modifier = Modifier.fillMaxWidth().height(280.dp).background(PrimaryRed), contentAlignment = Alignment.Center) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = 40.dp, start = 10.dp)) {
-                Icon(Icons.Default.Close, null, tint = Color.White)
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.ShoppingCart, null, tint = Color.White, modifier = Modifier.size(80.dp))
-                Text("Food", color = Color.White, fontSize = 42.sp, fontWeight = FontWeight.ExtraBold)
-            }
-        }
+    try {
+        val inputStream = context.contentResolver.openInputStream(uri)
+        val bytes = inputStream?.readBytes() ?: throw IOException("Erreur lecture")
+        inputStream.close()
 
-        Column(modifier = Modifier.fillMaxSize().offset(y = (-30).dp).background(Color.White, RoundedCornerShape(topStart = 35.dp, topEnd = 35.dp)).padding(30.dp)) {
-            Text(if (isSignUp) "Create Account" else "Welcome Back", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(20.dp))
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("key", apiKey)
+            .addFormDataPart("image", "image.jpg", RequestBody.create("image/jpeg".toMediaTypeOrNull(), bytes))
+            .build()
 
-            Text("Email Address", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            OutlinedTextField(value = email, onValueChange = { email = it }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), placeholder = { Text("Enter your email") })
+        val request = Request.Builder().url("https://api.imgbb.com/1/upload").post(requestBody).build()
 
-            Spacer(modifier = Modifier.height(15.dp))
-
-            Text("Password", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            OutlinedTextField(
-                value = password, onValueChange = { password = it },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text("Enter your password") },
-                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = { IconButton(onClick = { passwordVisible = !passwordVisible }) { Icon(if (passwordVisible) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null) } }
-            )
-
-            if (isSignUp) {
-                Spacer(modifier = Modifier.height(15.dp))
-                Text("Confirm Password", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                OutlinedTextField(value = confirmPassword, onValueChange = { confirmPassword = it }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), placeholder = { Text("Confirm your password") }, visualTransformation = PasswordVisualTransformation())
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                android.util.Log.e("LUBUMBASHI_DEBUG", "Échec réseau: ${e.message}")
+                mainHandler.post { onResult(null) }
             }
 
-            Spacer(modifier = Modifier.height(30.dp))
+            override fun onResponse(call: Call, response: Response) {
+                val resBody = response.body?.string()
+                android.util.Log.d("LUBUMBASHI_DEBUG", "Réponse: $resBody")
 
-            Button(
-                onClick = {
-                    if (isSignUp) {
-                        if (password == confirmPassword) {
-                            auth.createUserWithEmailAndPassword(email, password).addOnCompleteListener {
-                                if (it.isSuccessful) onAuthSuccess() else Toast.makeText(context, it.exception?.localizedMessage, Toast.LENGTH_LONG).show()
-                            }
-                        } else Toast.makeText(context, "Mots de passe différents", Toast.LENGTH_SHORT).show()
-                    } else {
-                        auth.signInWithEmailAndPassword(email, password).addOnCompleteListener {
-                            if (it.isSuccessful) onAuthSuccess() else Toast.makeText(context, "Erreur de connexion", Toast.LENGTH_SHORT).show()
+                mainHandler.post {
+                    if (response.isSuccessful && resBody != null && resBody.contains("\"url\":\"")) {
+                        // On cherche spécifiquement l'URL directe dans l'objet "data"
+                        try {
+                            val url = resBody.substringAfter("\"url\":\"").substringBefore("\"").replace("\\/", "/")
+                            android.util.Log.d("LUBUMBASHI_DEBUG", "URL Extraite: $url")
+                            onResult(url)
+                        } catch (e: Exception) {
+                            android.util.Log.e("LUBUMBASHI_DEBUG", "Erreur parsing: ${e.message}")
+                            onResult(null)
                         }
+                    } else {
+                        android.util.Log.e("LUBUMBASHI_DEBUG", "Réponse API invalide")
+                        onResult(null)
                     }
-                },
-                modifier = Modifier.fillMaxWidth().height(55.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed),
-                shape = RoundedCornerShape(15.dp)
-            ) { Text(if (isSignUp) "Sign Up" else "Sign In", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-
-            Spacer(modifier = Modifier.height(20.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                Text(if (isSignUp) "Already have an account? " else "Don't have an account? ")
-                Text(if (isSignUp) "Sign In" else "Sign Up", color = PrimaryRed, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { isSignUp = !isSignUp })
+                }
             }
-        }
+        })
+    } catch (e: Exception) {
+        android.util.Log.e("LUBUMBASHI_DEBUG", "Exception globale: ${e.message}")
+        onResult(null)
     }
 }
+// --- ÉCRANS ---
 
-// --- ÉCRAN D'ACCUEIL ---
 @Composable
-fun HomeScreen(onProductClick: (Product) -> Unit, onAddToCart: (Product) -> Unit) {
-    // --- État de la recherche et des catégories ---
-    val categories = listOf("All", "Pizza", "Burger", "Sandwich", "Drinks")
+fun HomeScreen(onProductClick: (DataSnapshot) -> Unit, onAddToCart: (DataSnapshot) -> Unit) {
+    var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
-    var searchQuery by remember { mutableStateOf("") } // Pour la barre de recherche
+    val categories = listOf("All", "Pizza", "Burger", "Sandwich", "Drinks")
+    var products by remember { mutableStateOf(listOf<DataSnapshot>()) }
 
-    // --- Ta liste de produits ---
-    val allProducts = listOf(
-        Product(1, "Classic Burger", "Burger", 250.0, R.drawable.burger),
-        Product(2, "Pizza Pepperoni", "Pizza", 350.0, R.drawable.pizza),
-        Product(3, "Cheese Sandwich", "Sandwich", 200.0, R.drawable.sandwich),
-        Product(4, "Fresh Drink", "Drinks", 120.0, R.drawable.burger) // Change l'image si tu as un icône boisson
-    )
+    LaunchedEffect(Unit) {
+        Firebase.database.reference.child("products").addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { products = s.children.toList() }
+            override fun onCancelled(e: com.google.firebase.database.DatabaseError) {}
+        })
+    }
 
-    // --- Logique de filtrage (Catégorie + Recherche) ---
-    val filteredProducts = allProducts.filter { product ->
-        val matchCategory = if (selectedCategory == "All") true else product.category == selectedCategory
-        val matchSearch = product.name.contains(searchQuery, ignoreCase = true)
-        matchCategory && matchSearch
+    val filtered = products.filter {
+        val name = it.child("name").value.toString()
+        val cat = it.child("category").value.toString()
+        name.contains(searchQuery, ignoreCase = true) && (selectedCategory == "All" || cat == selectedCategory)
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(modifier = Modifier.height(60.dp))
-
-        // --- EN-TÊTE DE BIENVENUE ---
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Salut 👋", fontSize = 16.sp, color = Color.Gray)
-                Text("C'est l'heure du miam !", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Color.Black)
-            }
-            Surface(
-                shape = CircleShape,
-                modifier = Modifier.size(45.dp),
-                color = Color.White,
-                shadowElevation = 2.dp
-            ) {
-                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.padding(8.dp), tint = PrimaryRed)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(25.dp))
-
-        // --- BARRE DE RECHERCHE FONCTIONNELLE ---
-        Surface(
-            modifier = Modifier.fillMaxWidth().height(55.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = Color.White,
-            shadowElevation = 3.dp
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 15.dp)) {
-                Icon(Icons.Default.Search, null, tint = Color.Gray)
-                BasicTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp),
-                    singleLine = true,
-                    decorationBox = { innerTextField ->
-                        if (searchQuery.isEmpty()) {
-                            Text("Chercher un délice...", color = Color.LightGray)
-                        }
-                        innerTextField()
-                    }
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(25.dp))
-
-        // --- LISTE DES CATÉGORIES ---
+        Text("Livraison Lubumbashi 📍", color = PrimaryRed, fontWeight = FontWeight.Bold)
+        Text("Notre Menu", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(Modifier.height(15.dp))
+        OutlinedTextField(
+            value = searchQuery, onValueChange = { searchQuery = it },
+            placeholder = { Text("Rechercher...") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(15.dp),
+            leadingIcon = { Icon(Icons.Default.Search, null) }
+        )
+        Spacer(Modifier.height(15.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(categories) { category ->
-                CategoryItem(
-                    name = category,
-                    isSelected = category == selectedCategory,
-                    onSelect = { selectedCategory = category }
-                )
+            items(categories) { cat ->
+                Button(
+                    onClick = { selectedCategory = cat },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (selectedCategory == cat) PrimaryRed else Color.White),
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text(cat, color = if (selectedCategory == cat) Color.White else Color.Black) }
             }
         }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            contentPadding = PaddingValues(top = 20.dp, bottom = 100.dp),
+            horizontalArrangement = Arrangement.spacedBy(15.dp),
+            verticalArrangement = Arrangement.spacedBy(15.dp)
+        ) {
+            items(filtered) { doc -> FoodCard(doc, onClick = { onProductClick(doc) }, onAddToCart = { onAddToCart(doc) }) }
+        }
+    }
+}
 
-        Spacer(modifier = Modifier.height(25.dp))
+@Composable
+fun FoodCard(doc: DataSnapshot, onClick: () -> Unit, onAddToCart: () -> Unit) {
+    val name = doc.child("name").value.toString()
+    val price = doc.child("price").value.toString()
+    val imageUrl = doc.child("imageUrl").value.toString()
 
-        // --- GRILLE DE PRODUITS ---
-        Text("Populaire à Lubumbashi", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-
-        if (filteredProducts.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Aucun produit trouvé 🍕", color = Color.Gray)
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 10.dp, bottom = 100.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(filteredProducts) { product ->
-                    FoodCard(
-                        product = product,
-                        onClick = { onProductClick(product) },
-                        onAddToCart = { onAddToCart(product) }
-                    )
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(4.dp)
+    ) {
+        Column {
+            Image(
+                painter = rememberAsyncImagePainter(imageUrl),
+                contentDescription = null,
+                modifier = Modifier.fillMaxWidth().height(120.dp),
+                contentScale = ContentScale.Crop
+            )
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(name, fontWeight = FontWeight.Bold, maxLines = 1)
+                Row(modifier = Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text("$price Rs", color = PrimaryRed, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = onAddToCart, modifier = Modifier.size(28.dp).background(PrimaryRed, CircleShape)) {
+                        Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }
     }
 }
-// --- ÉCRAN PANIER ---
+
 @Composable
-fun CartScreen(cartItems: MutableList<Product>, onBack: () -> Unit, onRemove: (Product) -> Unit) {
-    val totalPrice = cartItems.sumOf { it.price }
+fun AuthScreen(onAuthSuccess: () -> Unit, onBack: () -> Unit) {
+    var isSignUp by remember { mutableStateOf(false) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     val context = LocalContext.current
-    val user = Firebase.auth.currentUser
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.White).padding(30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onBack, modifier = Modifier.align(Alignment.Start)) { Icon(Icons.Default.Close, null) }
+        Text(if (isSignUp) "Créer un compte" else "Connexion", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = {
+            val auth = Firebase.auth
+            if (isSignUp) auth.createUserWithEmailAndPassword(email, password).addOnCompleteListener { if (it.isSuccessful) onAuthSuccess() else Toast.makeText(context, "Erreur", Toast.LENGTH_SHORT).show() }
+            else auth.signInWithEmailAndPassword(email, password).addOnCompleteListener { if (it.isSuccessful) onAuthSuccess() else Toast.makeText(context, "Échec connexion", Toast.LENGTH_SHORT).show() }
+        }, modifier = Modifier.fillMaxWidth().height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)) {
+            Text(if (isSignUp) "S'inscrire" else "Se connecter")
+        }
+        TextButton(onClick = { isSignUp = !isSignUp }) { Text(if (isSignUp) "Déjà un compte ? Connectez-vous" else "Pas de compte ? Inscrivez-vous") }
+    }
+}
+
+@Composable
+fun CartScreen(cartItems: MutableList<DataSnapshot>, onBack: () -> Unit, onRemove: (DataSnapshot) -> Unit) {
+    val total = cartItems.sumOf { it.child("price").value.toString().toDoubleOrNull() ?: 0.0 }
+    val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
             Text("Mon Panier", fontSize = 24.sp, fontWeight = FontWeight.Bold)
         }
-        Spacer(modifier = Modifier.height(20.dp))
-        if (cartItems.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("Votre panier est vide", color = Color.Gray)
-            }
-        } else {
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(cartItems) { product ->
-                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(painterResource(product.imageRes), null, modifier = Modifier.size(50.dp))
-                            Spacer(Modifier.width(10.dp))
-                            Column {
-                                Text(product.name, fontWeight = FontWeight.Bold)
-                                Text("${product.price} Rs", color = PrimaryRed)
-                            }
-                        }
-                        IconButton(onClick = { onRemove(product) }) { Icon(Icons.Default.Delete, null, tint = Color.Gray) }
-                    }
-                    HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(cartItems) { item ->
+                Row(modifier = Modifier.fillMaxWidth().padding(10.dp), Arrangement.SpaceBetween) {
+                    Text(item.child("name").value.toString(), fontWeight = FontWeight.Bold)
+                    IconButton(onClick = { onRemove(item) }) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
                 }
             }
         }
-        Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Total", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text("${totalPrice} Rs", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = PrimaryRed)
+        Button(onClick = {
+            val user = Firebase.auth.currentUser
+            val order = mapOf(
+                "userId" to user?.uid,
+                "userEmail" to user?.email,
+                "items" to cartItems.map { it.child("name").value.toString() },
+                "total" to total,
+                "status" to "En préparation",
+                "timestamp" to System.currentTimeMillis()
+            )
+            Firebase.database.reference.child("orders").push().setValue(order).addOnSuccessListener {
+                cartItems.clear()
+                onBack()
+                Toast.makeText(context, "Commande confirmée !", Toast.LENGTH_SHORT).show()
             }
-            Spacer(modifier = Modifier.height(20.dp))
-            Button(
-                onClick = {
-                    if (user == null) {
-                        Toast.makeText(context, "Connectez-vous !", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val database = Firebase.database.reference.child("orders")
-                        val orderData = mapOf(
-                            "userId" to user.uid,
-                            "userEmail" to user.email,
-                            "items" to cartItems.map { it.name },
-                            "total" to totalPrice,
-                            "status" to "En attente",
-                            "timestamp" to System.currentTimeMillis()
-                        )
-                        database.push().setValue(orderData).addOnSuccessListener {
-                            Toast.makeText(context, "Commande envoyée !", Toast.LENGTH_LONG).show()
-                            cartItems.clear()
-                            onBack()
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(60.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed),
-                shape = RoundedCornerShape(20.dp),
-                enabled = cartItems.isNotEmpty()
-            ) { Text("Commander maintenant", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        }, modifier = Modifier.fillMaxWidth().height(55.dp), colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)) {
+            Text("Payer ($total Rs)")
         }
     }
 }
 
-// --- ÉCRAN DÉTAILS ---
 @Composable
-fun DetailScreen(product: Product, onBack: () -> Unit, onAddToCart: (Product) -> Unit) {
+fun DetailScreen(product: DataSnapshot, onBack: () -> Unit, onAddToCart: (DataSnapshot) -> Unit) {
+    val name = product.child("name").value.toString()
+    val price = product.child("price").value.toString()
+    val imageUrl = product.child("imageUrl").value.toString()
+
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        Box(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.45f).background(PrimaryRed, RoundedCornerShape(bottomStart = 50.dp, bottomEnd = 50.dp)), contentAlignment = Alignment.Center) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = 40.dp, start = 20.dp)) {
-                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
-            }
-            Image(painter = painterResource(id = product.imageRes), null, modifier = Modifier.size(220.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(300.dp)) {
+            Image(painter = rememberAsyncImagePainter(imageUrl), null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            IconButton(onClick = onBack, modifier = Modifier.padding(20.dp).background(Color.White, CircleShape)) { Icon(Icons.Default.ArrowBack, null) }
         }
         Column(modifier = Modifier.padding(25.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(text = product.name, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text(text = "Rs. ${product.price}", fontSize = 24.sp, color = PrimaryRed, fontWeight = FontWeight.Bold)
-            }
-            Text(text = product.category, color = Color.Gray)
-            Spacer(modifier = Modifier.height(20.dp))
-            Text("A delicious ${product.name} prepared with fresh ingredients.", color = Color.Gray, lineHeight = 22.sp)
-            Spacer(modifier = Modifier.weight(1f))
-            Button(onClick = { onAddToCart(product) }, modifier = Modifier.fillMaxWidth().height(60.dp), colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed), shape = RoundedCornerShape(20.dp)) {
-                Text("Add to Cart", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(name, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text("$price Rs", fontSize = 24.sp, color = PrimaryRed, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(20.dp))
+            Text("Savourez ce délicieux plat préparé à Lubumbashi.", color = Color.Gray)
+            Spacer(Modifier.weight(1f))
+            Button(onClick = { onAddToCart(product) }, modifier = Modifier.fillMaxWidth().height(60.dp), colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)) {
+                Text("Ajouter au Panier")
             }
         }
     }
 }
 
-// --- ÉCRAN PROFIL ---
 @Composable
-fun ProfileScreen(isAdmin: Boolean, onBack: () -> Unit, onAdminClick: () -> Unit, onLogout: () -> Unit) {
-    val user = Firebase.auth.currentUser
-    val database = Firebase.database.reference.child("users").child(user?.uid ?: "")
-    var phone by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
-    val context = LocalContext.current
-
-    LaunchedEffect(Unit) {
-        database.get().addOnSuccessListener { snapshot ->
-            phone = snapshot.child("phone").value.toString().replace("null", "")
-            address = snapshot.child("address").value.toString().replace("null", "")
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
-            Text("Mon Profil", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-        Text("Email: ${user?.email}", color = Color.Gray)
-
+fun ProfileScreen(isAdmin: Boolean, onBack: () -> Unit, onAdminClick: () -> Unit, onAddProductClick: () -> Unit, onLogout: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().padding(25.dp)) {
+        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
+        Text("Mon Profil", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(30.dp))
         if (isAdmin) {
-            Button(onClick = onAdminClick, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black)) {
-                Text("🛠️ GESTION COMMANDES (ADMIN)")
-            }
+            Button(onClick = onAdminClick, modifier = Modifier.fillMaxWidth()) { Text("📦 Gérer les Commandes") }
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = onAddProductClick, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) { Text("➕ Ajouter un Plat") }
         }
-
-        OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Téléphone") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-        Spacer(modifier = Modifier.height(10.dp))
-        OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text("Adresse de livraison") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-
-        Spacer(modifier = Modifier.height(30.dp))
-        Button(onClick = {
-            database.updateChildren(mapOf("phone" to phone, "address" to address)).addOnSuccessListener {
-                Toast.makeText(context, "Profil sauvegardé !", Toast.LENGTH_SHORT).show()
-            }
-        }, modifier = Modifier.fillMaxWidth().height(55.dp), colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed), shape = RoundedCornerShape(15.dp)) {
-            Text("Sauvegarder les infos")
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
-        TextButton(onClick = {
-            Firebase.auth.signOut()
-            onLogout()
-        }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-            Text("Se déconnecter", color = Color.Red)
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = { Firebase.auth.signOut(); onLogout() }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text("Déconnexion", color = Color.Red)
         }
     }
 }
 
-// --- ÉCRAN ADMIN ---
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminOrdersScreen(onBack: () -> Unit) {
-    val database = Firebase.database.reference.child("orders")
-    var ordersList by remember { mutableStateOf(listOf<DataSnapshot>()) }
-
+    var orders by remember { mutableStateOf(listOf<DataSnapshot>()) }
     LaunchedEffect(Unit) {
-        database.addValueEventListener(object : com.google.firebase.database.ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                ordersList = snapshot.children.reversed()
-            }
-            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
+        Firebase.database.reference.child("orders").addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) { orders = s.children.toList().reversed() }
+            override fun onCancelled(e: com.google.firebase.database.DatabaseError) {}
         })
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(BgGray).padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
-            Text("Gestion des Commandes", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopAppBar(title = { Text("Commandes") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } })
+        LazyColumn(modifier = Modifier.padding(16.dp)) {
+            items(orders) { order -> OrderAdminCard(order) }
+        }
+    }
+}
+
+@Composable
+fun OrderAdminCard(order: DataSnapshot) {
+    val email = order.child("userEmail").value?.toString() ?: "Inconnu"
+    val status = order.child("status").value?.toString() ?: "En attente"
+
+    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(email, fontWeight = FontWeight.Bold)
+            Text("Statut: $status")
+            Button(onClick = { order.ref.child("status").setValue("Livré") }) { Text("Marquer comme Livré") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddProductScreen(onBack: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("Pizza") }
+    var imageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var isUploading by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { imageUri = it }
+
+    Column(modifier = Modifier.fillMaxSize().padding(25.dp).verticalScroll(rememberScrollState())) {
+        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
+        Text("Ajouter au Menu", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(15.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(150.dp).background(Color.LightGray, RoundedCornerShape(15.dp)).clickable { launcher.launch("image/*") }, contentAlignment = Alignment.Center) {
+            if (imageUri == null) Text("Sélectionner Image")
+            else Image(painter = rememberAsyncImagePainter(imageUri), null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Nom") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = price, onValueChange = { price = it }, label = { Text("Prix") }, modifier = Modifier.fillMaxWidth())
+
+        Row(Modifier.padding(vertical = 10.dp)) {
+            listOf("Pizza", "Burger", "Drinks").forEach { cat ->
+                FilterChip(selected = category == cat, onClick = { category = cat }, label = { Text(cat) })
+                Spacer(Modifier.width(8.dp))
+            }
         }
 
-        LazyColumn {
-            items(ordersList) { order ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(2.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Client: ${order.child("userEmail").value}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            // BOUTON SUPPRIMER
-                            IconButton(onClick = { order.ref.removeValue() }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Default.Delete, contentDescription = "Supprimer", tint = Color.Gray)
-                            }
-                        }
-                        Text("Articles: ${order.child("items").value}", fontSize = 14.sp)
-                        Text("Total: ${order.child("total").value} Rs", color = PrimaryRed, fontWeight = FontWeight.Bold)
-
-                        Text(
-                            "Statut: ${order.child("status").value}",
-                            color = if (order.child("status").value == "Livré") Color(0xFF4CAF50) else Color.Blue,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Row(modifier = Modifier.padding(top = 12.dp)) {
-                            Button(
-                                onClick = { order.ref.child("status").setValue("En préparation") },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFA500)),
-                                modifier = Modifier.weight(1f).height(35.dp),
-                                shape = RoundedCornerShape(8.dp)
-                            ) { Text("Préparer", fontSize = 11.sp, color = Color.White) }
-
-                            Spacer(Modifier.width(8.dp))
-
-                            Button(
-                                onClick = { order.ref.child("status").setValue("Livré") },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
-                                modifier = Modifier.weight(1f).height(35.dp),
-                                shape = RoundedCornerShape(8.dp)
-                            ) { Text("Livré", fontSize = 11.sp, color = Color.White) }
+        Button(
+            onClick = {
+                if (imageUri != null && name.isNotEmpty() && price.isNotEmpty()) {
+                    isUploading = true
+                    uploadImageToImgBB(imageUri!!, context) { url ->
+                        if (url != null) {
+                            val p = mapOf(
+                                "name" to name,
+                                "price" to (price.toDoubleOrNull() ?: 0.0),
+                                "category" to category,
+                                "imageUrl" to url
+                            )
+                            Firebase.database.reference.child("products").push().setValue(p)
+                                .addOnSuccessListener {
+                                    isUploading = false
+                                    onBack()
+                                    Toast.makeText(context, "Produit ajouté !", Toast.LENGTH_SHORT).show()
+                                }
+                                .addOnFailureListener {
+                                    isUploading = false
+                                    Toast.makeText(context, "Erreur Firebase", Toast.LENGTH_SHORT).show()
+                                }
+                        } else {
+                            isUploading = false
+                            Toast.makeText(context, "Échec de l'upload de l'image", Toast.LENGTH_LONG).show()
                         }
                     }
+                } else {
+                    Toast.makeText(context, "Veuillez remplir tous les champs", Toast.LENGTH_SHORT).show()
                 }
+            },
+            modifier = Modifier.fillMaxWidth().height(55.dp),
+            enabled = !isUploading,
+            colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)
+        ) {
+            if (isUploading) {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+            } else {
+                Text("Enregistrer le produit")
             }
         }
     }
-}
-
-// --- COMPOSANTS ---
-@Composable
-fun FoodCard(product: Product, onClick: () -> Unit, onAddToCart: () -> Unit) {
-    Card(shape = RoundedCornerShape(25.dp), colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.padding(8.dp).fillMaxWidth().clickable { onClick() }, elevation = CardDefaults.cardElevation(4.dp)) {
-        Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Image(painter = painterResource(id = product.imageRes), null, modifier = Modifier.size(90.dp))
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(text = product.name, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("${product.price} Rs", fontWeight = FontWeight.ExtraBold)
-                Surface(shape = CircleShape, color = PrimaryRed, modifier = Modifier.size(32.dp).clickable { onAddToCart() }) {
-                    Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.padding(4.dp))
-                }
-            }
-        }
-    }
-}
+} // <--- CETTE ACCOLADE FERME AddProductScreen
 
 @Composable
-fun CategoryItem(name: String, isSelected: Boolean, onSelect: () -> Unit) {
-    Surface(modifier = Modifier.padding(end = 12.dp).clickable { onSelect() }, shape = RoundedCornerShape(25.dp), color = if (isSelected) PrimaryRed else Color.White, shadowElevation = 2.dp) {
-        Text(text = name, modifier = Modifier.padding(horizontal = 25.dp, vertical = 10.dp), color = if (isSelected) Color.White else Color.Black)
-    }
-}
-
-@Composable
-fun BottomNavBar(cartSize: Int, onCartClick: () -> Unit, onProfileClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(modifier = modifier.padding(20.dp).fillMaxWidth().height(70.dp), color = Color(0xFF3E0A0A), shape = RoundedCornerShape(35.dp)) {
-        Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Home, null, tint = Color.White)
-            Icon(Icons.Default.FavoriteBorder, null, tint = Color.Gray)
-            Box(modifier = Modifier.clickable { onCartClick() }) {
-                Icon(Icons.Default.ShoppingCart, null, tint = Color.Gray)
+fun BottomNavBar(cartSize: Int, onCartClick: () -> Unit, onProfileClick: () -> Unit, modifier: Modifier) {
+    Surface(modifier = modifier.fillMaxWidth().height(70.dp), color = Color.White, shadowElevation = 10.dp) {
+        Row(modifier = Modifier.fillMaxSize(), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+            IconButton(onClick = {}) { Icon(Icons.Default.Home, null, tint = PrimaryRed) }
+            Box {
+                IconButton(onClick = onCartClick) { Icon(Icons.Default.ShoppingCart, null) }
                 if (cartSize > 0) {
-                    Surface(color = Color.Red, shape = CircleShape, modifier = Modifier.size(18.dp).align(Alignment.TopEnd).offset(x = 10.dp, y = (-8).dp)) {
-                        Text(cartSize.toString(), color = Color.White, fontSize = 10.sp, modifier = Modifier.wrapContentSize(Alignment.Center))
+                    Surface(color = PrimaryRed, shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).size(18.dp)) {
+                        Text("$cartSize", color = Color.White, fontSize = 10.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
                 }
             }
-            Icon(Icons.Default.Person, null, tint = Color.Gray, modifier = Modifier.clickable { onProfileClick() })
+            IconButton(onClick = onProfileClick) { Icon(Icons.Default.Person, null) }
         }
     }
 }
